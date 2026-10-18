@@ -1,0 +1,140 @@
+#!/bin/bash
+
+echo "Автор: Божицкий Михаил"
+echo "Группа: ИСТ-24-1, номер: 2"
+echo "Программа: создание ISO-образа каталога"
+echo "Запрашивает исходный каталог и имя образа."
+echo "При совпадении имени добавляет текущую дату."
+
+image_dir="$HOME/lab5a/images"
+temp_file=""
+
+cleanup() {
+    if [[ -n "$temp_file" ]]; then
+        rm -f -- "$temp_file"
+    fi
+}
+
+trap cleanup EXIT
+trap 'echo "Работа прервана." >&2; exit 321' INT TERM
+
+create_iso() {
+    local source name output stamp number
+
+    if ! command -v genisoimage >/dev/null 2>&1; then
+        echo "Ошибка: установите пакет genisoimage." >&2
+        return 1
+    fi
+
+    if ! read -r -p "Путь к каталогу с файлами: " source; then
+        echo "Ошибка: ввод прерван." >&2
+        return 1
+    fi
+
+    if [[ -z "$source" || ! -d "$source" ]]; then
+        echo "Ошибка: указанный каталог не существует." >&2
+        return 1
+    fi
+
+    source=$(realpath -e -- "$source") || return 1
+
+    if ! mkdir -p -- "$image_dir"; then
+        echo "Ошибка создания каталога образов." >&2
+        return 1
+    fi
+
+    image_dir=$(realpath -e -- "$image_dir") || return 1
+
+    case "$image_dir/" in
+        "$source/"*)
+            echo "Ошибка: каталог образов находится внутри источника." >&2
+            echo "Выберите более узкий исходный каталог." >&2
+            return 1
+            ;;
+    esac
+
+    echo "Образы сохраняются в $image_dir"
+
+    if ! read -r -p "Имя образа без пути, например lab.iso: " name; then
+        echo "Ошибка: ввод прерван." >&2
+        return 1
+    fi
+
+    if [[ -z "$name" || "$name" == */* ||
+          "$name" == "." || "$name" == ".." ]]; then
+        echo "Ошибка: укажите имя файла без пути." >&2
+        return 1
+    fi
+
+    [[ "$name" == *.iso ]] || name="$name.iso"
+
+    output="$image_dir/$name"
+
+    if [[ -e "$output" || -L "$output" ]]; then
+        stamp=$(date +%Y-%m-%d_%H-%M-%S) || return 1
+        output="$image_dir/${name%.iso}_$stamp.iso"
+        number=1
+
+        while [[ -e "$output" || -L "$output" ]]; do
+            output="$image_dir/${name%.iso}_${stamp}_$number.iso"
+            number=$((number + 1))
+        done
+
+        echo "Имя занято. Новое имя: ${output##*/}"
+    fi
+
+    temp_file=$(mktemp "$image_dir/.iso-build.XXXXXX") || return 1
+
+    echo "Создание образа..."
+
+    if ! genisoimage -r -J -o "$temp_file" "$source"; then
+        echo "Ошибка создания ISO-образа." >&2
+        cleanup
+        temp_file=""
+        return 1
+    fi
+
+    # Публикуем готовый образ без перезаписи существующего файла.
+    if ! ln -- "$temp_file" "$output"; then
+        echo "Ошибка сохранения: файл назначения мог появиться ранее." >&2
+        cleanup
+        temp_file=""
+        return 1
+    fi
+
+    cleanup
+    temp_file=""
+
+    echo "Образ создан: $output"
+    ls -lh -- "$output" || return 1
+}
+
+while true; do
+    last_error=0
+
+    if ! create_iso; then
+        last_error=1
+    fi
+
+    while true; do
+        if ! read -r -p "Создать ещё один образ? [y/n]: " answer; then
+            echo "Ошибка: ввод прерван." >&2
+            exit 321
+        fi
+
+        case "$answer" in
+            y|Y|д|Д)
+                break
+                ;;
+            n|N|н|Н)
+                if (( last_error != 0 )); then
+                    exit 321
+                fi
+                exit 0
+                ;;
+            *)
+                echo "Ошибка: введите y или n." >&2
+                ;;
+        esac
+    done
+done
